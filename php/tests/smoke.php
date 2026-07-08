@@ -2,13 +2,12 @@
 
 declare(strict_types=1);
 
-// Smoke runner independiente del backend: usa la fachada Tantivy\Client, que elige FFI o ext
-// según qué haya cargado. Sale con código != 0 y un mensaje si algo falla.
+// Smoke runner: usa la fachada Tantivy\Client sobre la extensión nativa.
+// Sale con código != 0 y un mensaje si algo falla.
 
 require __DIR__ . '/../src/TantivyException.php';
 require __DIR__ . '/../src/IndexBusyException.php';
 require __DIR__ . '/../src/ClientInterface.php';
-require __DIR__ . '/../src/FfiClient.php';
 require __DIR__ . '/../src/ExtClient.php';
 require __DIR__ . '/../src/Client.php';
 
@@ -37,9 +36,6 @@ $config = [
     'writer_heap_bytes' => 15_000_000,
 ];
 
-$backend = \class_exists('\\Tantivy\\Native\\Index') ? 'ext' : 'ffi';
-fwrite(STDOUT, "smoke backend: $backend\n");
-
 $c = Client::openOrCreate($config);
 $c->addDocument(['id_key' => '1', 'title' => 'reset password']);
 $c->commit();
@@ -54,5 +50,5 @@ $c->commit();
 assert_that($c->documentCount() === 0, 'documentCount debe ser 0 tras delete+commit');
 $c->close();
 
-fwrite(STDOUT, "SMOKE OK ($backend)\n");
+fwrite(STDOUT, "SMOKE OK (ext)\n");
 exit(0);

@@ -5,26 +5,34 @@ declare(strict_types=1);
 namespace Tantivy;
 
 /**
- * Fachada que selecciona el backend disponible. Es el ÚNICO lugar que sabe que existen dos
- * implementaciones; los consumidores sólo dependen de esta clase y de ClientInterface.
- * Cuando un backend gane a mediano plazo, se borra su clase perdedora y esta rama del if.
+ * Punto de entrada público. Los consumidores dependen sólo de esta clase y de ClientInterface;
+ * la implementación concreta (ExtClient, sobre la extensión nativa ext-php-rs) queda encapsulada.
  */
 final class Client
 {
     public static function openOrCreate(array $config): ClientInterface
     {
-        return (self::backend())::openOrCreate($config);
+        self::ensureExtensionLoaded();
+        return ExtClient::openOrCreate($config);
     }
 
     public static function openReadOnly(array $config): ClientInterface
     {
-        return (self::backend())::openReadOnly($config);
+        self::ensureExtensionLoaded();
+        return ExtClient::openReadOnly($config);
     }
 
-    /** @return class-string<ClientInterface> */
-    private static function backend(): string
+    /**
+     * La extensión nativa registra la clase Tantivy\Native\Index al cargarse. Si no está, fallamos
+     * con un mensaje accionable en vez de dejar reventar un "class not found" opaco más abajo.
+     */
+    private static function ensureExtensionLoaded(): void
     {
-        // detecta la extensión nativa por la clase que registra (más robusto que el nombre del módulo).
-        return \class_exists('\\Tantivy\\Native\\Index') ? ExtClient::class : FfiClient::class;
+        if (!\class_exists('\\Tantivy\\Native\\Index')) {
+            throw new TantivyException(
+                'La extensión nativa tantivyphp no está cargada (falta Tantivy\\Native\\Index). '
+                . 'Cargala con extension=tantivyphp.so (o tantivyphp_ext.so) en tu php.ini.'
+            );
+        }
     }
 }

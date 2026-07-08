@@ -1,8 +1,8 @@
 name: build
 
-# Builds and tests both PHP bindings (FFI cdylib + ext-php-rs extension) for the tantivy-php
-# workspace, per spec §6 (docs/superpowers/specs/2026-07-08-tantivy-php-ext-php-rs-binding-design.md)
-# and plan Task 9 (docs/superpowers/plans/2026-07-08-tantivy-php-ext-php-rs-binding.md).
+# Builds and tests the ext-php-rs PHP extension for the tantivy-php workspace, per spec §6
+# (docs/superpowers/specs/2026-07-08-tantivy-php-ext-php-rs-binding-design.md) and plan Task 9
+# (docs/superpowers/plans/2026-07-08-tantivy-php-ext-php-rs-binding.md).
 #
 # Scope is pinned to PHP 8.4 NTS, x86_64, per the project's stated constraint (see spec §10
 # no-objetivos: no ZTS, no other PHP versions, no macOS).
@@ -36,10 +36,9 @@ jobs:
           # against whichever ABI php-config reports, so we assert NTS explicitly below rather
           # than trust the default silently.
           tools: none
-          # ffi must be loaded for the FFI-backend smoke; ffi.enable=1 alone does nothing if the
-          # extension isn't present. The ext-backend smoke needs no PHP extension of its own.
-          extensions: ffi
-          ini-values: ffi.enable=1
+          # The ext backend IS the extension under test (loaded via -d extension= in the smoke
+          # step), so no PHP extension needs to be preinstalled here.
+          extensions: none
 
       - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
         run: php -v | grep -q 'NTS' || { echo "::error::expected an NTS PHP build, got:"; php -v; exit 1; }
@@ -58,33 +57,27 @@ jobs:
           php -v
           php-config --version
 
-      # Builds crates/tantivy-ffi (libtantivyphp.so) and crates/tantivy-ext (libtantivyphp_ext.so)
-      # from the workspace root in one pass. On this Linux setup (stable Rust + clang present),
-      # no special env vars (LIBCLANG_PATH / BINDGEN_EXTRA_CLANG_ARGS) are needed — see progress
-      # notes in docs/superpowers/sdd/progress.md for the historical libclang-only fallback.
-      - name: cargo build --release (builds both cdylibs)
+      # Builds crates/tantivy-ext (libtantivyphp_ext.so) from the workspace root. On this Linux
+      # setup (stable Rust + clang present), no special env vars (LIBCLANG_PATH /
+      # BINDGEN_EXTRA_CLANG_ARGS) are needed — see progress notes in
+      # docs/superpowers/sdd/progress.md for the historical libclang-only fallback.
+      - name: cargo build --release
         run: cargo build --release
 
-      - name: cargo test (tantivy-core + tantivy-ffi roundtrip)
+      - name: cargo test (tantivy-core + tantivy-ext)
         run: cargo test
 
       - name: cargo clippy -D warnings
         run: cargo clippy --release --all-targets -- -D warnings
 
-      - name: Smoke test — FFI backend (ffi.enable, TANTIVYPHP_LIB)
-        env:
-          TANTIVYPHP_LIB: ${{ github.workspace }}/target/release/libtantivyphp.so
-        run: php -d ffi.enable=1 php/tests/smoke.php
-
       - name: Smoke test — ext backend (extension=, no ffi.enable needed)
         run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" php/tests/smoke.php
 
-      # Package the Linux half of the 4-artifact matrix (spec §6): FFI cdylib as-is, ext cdylib
-      # renamed to tantivyphp.so so it drops straight into extension_dir per the install guide.
+      # Package the Linux ext artifact: the ext cdylib renamed to tantivyphp.so so it drops
+      # straight into extension_dir per the install guide.
       - name: Stage Linux artifacts
         run: |
           mkdir -p dist/linux
-          cp target/release/libtantivyphp.so dist/linux/libtantivyphp.so
           cp target/release/libtantivyphp_ext.so dist/linux/tantivyphp.so
 
       - name: Upload Linux artifacts
@@ -99,8 +92,7 @@ jobs:
     runs-on: windows-latest
     # Recipe mirrors ext-php-rs's own upstream Windows CI (setup-php + nightly, no dev-pack step,
     # default MSVC linker). Kept `continue-on-error: true` only until this job has gone green here
-    # at least once — a Windows-ext failure then never blocks the pipeline, and the FFI cdylib
-    # already covers Windows customers who can enable ffi.enable=1. Flip to false once it's green.
+    # at least once — a Windows-ext failure then never blocks the pipeline. Flip to false once green.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -153,11 +145,7 @@ jobs:
           php -d extension="${{ github.workspace }}\target\release\tantivyphp_ext.dll" -m
           php -d extension="${{ github.workspace }}\target\release\tantivyphp_ext.dll" -r "var_dump(class_exists('Tantivy\Native\Index'));"
 
-      # Windows half of the 4-artifact matrix (spec §6). NOTE: this only stages the ext .dll.
-      # The FFI Windows artifact (tantivyphp.dll, "existing path" per spec §6) is not built by
-      # this workflow yet — it was previously flagged (docs/superpowers/sdd/progress.md, "Carried
-      # items") as not verified in any environment and is tracked separately, not part of this
-      # ext-focused spike/CI task.
+      # Stages the Windows ext .dll artifact.
       - name: Stage Windows ext artifact
         shell: pwsh
         run: |

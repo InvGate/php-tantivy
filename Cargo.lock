@@ -1621,14 +1621,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tantivy-ffi"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tantivy-core",
-]
-
-[[package]]
 name = "tantivy-fst"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
