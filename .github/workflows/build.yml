@@ -117,8 +117,14 @@ jobs:
 
       # RUSTSEC advisories over the dependency tree. cargo-deny (below) also checks advisories, but
       # cargo-audit is kept as a lighter, advisory-only signal per the project's tooling choice.
+      #
+      # RUSTSEC-2026-0002 (lru IterMut unsoundness) is IGNORED deliberately: lru is pulled only
+      # transitively by tantivy 0.25, which pins `lru = "^0.12"` and thus caps it below the patched
+      # 0.16.3 — the fix is unreachable without tantivy relaxing its constraint upstream. It's an
+      # unsound-only advisory (no known exploit; effectively Miri-only), not a vulnerability. Remove
+      # this ignore once tantivy ships a release that bumps lru to >= 0.16.3.
       - name: cargo audit
-        run: cargo audit
+        run: cargo audit --ignore RUSTSEC-2026-0002
 
       # Advisories + license policy + source policy + dependency bans. Config: deny.toml.
       - name: cargo deny
