@@ -117,16 +117,32 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      # CRITICAL for a *distributable* .dll: Windows PHP refuses to load an extension built with a
+      # NEWER MSVC toolset than the PHP core ("Can't load module ... linked with 14.51, but the core
+      # is linked with 14.44"). The runner's default MSVC drifts ahead of the toolset windows.php.net
+      # uses to build PHP, so we PIN the toolset to match the target PHP. `14.44` matches the current
+      # windows.php.net PHP 8.4 build (the one bundled with Service Desk). To confirm/adjust: run
+      # `php -i | findstr Compiler` on the target PHP — the extension toolset must be <= the core's.
+      # If the runner image doesn't ship 14.44, add a VS-installer step to install that VC component.
+      - name: Pin MSVC toolset to match target PHP (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: '14.44'
+
       - name: Show toolchain versions
         shell: pwsh
         run: |
           rustc +nightly --version
           cargo --version
+          cl 2>&1 | Select-Object -First 1
           php -v
+          php -i | Select-String -SimpleMatch 'Compiler'
 
       # ext-php-rs on Windows requires nightly for the vectorcall calling convention used to call
       # back into PHP internals. Do NOT drop the `+nightly` here — see Task 8 notes for what a
-      # stable-toolchain attempt is expected to fail with.
+      # stable-toolchain attempt is expected to fail with. The build uses the MSVC toolset pinned
+      # above (msvc-dev-cmd sets PATH/LIB/INCLUDE for this job), so the .dll links against 14.44.
       - name: Build tantivy-ext (nightly, release)
         shell: pwsh
         run: cargo +nightly build --release -p tantivy-ext
