@@ -9,6 +9,12 @@ description = "Embed the tantivy search engine in PHP, via a Rust cdylib (FFI) o
 repository = "https://github.com/InvGate/php-tantivy"
 license = "MIT OR Apache-2.0"
 
+[profile.release]
+# Strip the local symbol table from distributed artifacts (no DWARF is emitted anyway).
+# Exported ABI symbols live in .dynsym and are preserved, so FFI::cdef and the PHP extension
+# entry point still resolve.
+strip = true
+
 [workspace.dependencies]
 tantivy = "0.25"
 serde = { version = "1", features = ["derive"] }
