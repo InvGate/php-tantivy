@@ -1,0 +1,8 @@
+parameters:
+    level: 8
+    paths:
+        - src
+    # Tantivy\Native\Index is provided by the native extension at runtime; register it for analysis
+    # via scanFiles (defines the symbol without reporting on the stub itself).
+    scanFiles:
+        - phpstan/native-index.php

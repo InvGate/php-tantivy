@@ -108,6 +108,24 @@ jobs:
       - name: cargo machete (unused dependencies)
         run: cargo machete
 
+  php-lint:
+    name: PHP static analysis (PHPStan level 8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP 8.4 + PHPStan
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: phpstan
+          # PHPStan needs ctype/tokenizer (shared, not compiled into the runner's PHP). The native
+          # ext is NOT loaded — Tantivy\Native\Index is stubbed for analysis (php/phpstan/).
+          extensions: ctype, tokenizer
+
+      - name: phpstan analyse
+        run: phpstan analyse -c php/phpstan.neon
+
   coverage:
     name: Coverage (tantivy-core, informational)
     runs-on: ubuntu-latest
@@ -145,8 +163,8 @@ jobs:
   build-linux:
     name: Build + integration (Linux, PHP 8.4 NTS)
     runs-on: ubuntu-latest
-    # Only build once the Rust tests AND the lint/security gates are green.
-    needs: [test, lint]
+    # Only build once the Rust tests AND the lint/security/PHP-analysis gates are green.
+    needs: [test, lint, php-lint]
     steps:
       - uses: actions/checkout@v4
 
@@ -154,10 +172,11 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          # phpunit is used by the PHPUnit step below; the ext .so is loaded via -d extension=,
-          # so no PHP extension needs to be preinstalled here.
           tools: phpunit
-          extensions: none
+          # PHPUnit needs these shared extensions (ctype/tokenizer are not compiled into the runner's
+          # PHP; the rest it requires — dom/mbstring/xmlwriter/... — are). The tantivy ext itself is
+          # NOT installed here: it is loaded per-command via -d extension= (it is the class under test).
+          extensions: ctype, tokenizer
 
       - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
         run: php -v | grep -q 'NTS' || { echo "::error::expected an NTS PHP build, got:"; php -v; exit 1; }
@@ -207,7 +226,7 @@ jobs:
     # Only after the Rust tests + lint gates pass. Recipe mirrors ext-php-rs's own upstream Windows
     # CI. Kept `continue-on-error: true` only until this job has gone green here at least once — a
     # Windows-ext failure then never blocks the pipeline. Flip to false once green.
-    needs: [test, lint]
+    needs: [test, lint, php-lint]
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

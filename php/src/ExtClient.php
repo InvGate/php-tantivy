@@ -132,6 +132,7 @@ final class ExtClient implements ClientInterface
         }
     }
 
+    /** @param array<string, mixed> $data */
     private static function json(array $data): string
     {
         return json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);

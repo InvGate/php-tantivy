@@ -7,15 +7,27 @@ namespace Tantivy;
 /**
  * Punto de entrada público. Los consumidores dependen sólo de esta clase y de ClientInterface;
  * la implementación concreta (ExtClient, sobre la extensión nativa ext-php-rs) queda encapsulada.
+ *
+ * @phpstan-import-type IndexConfig from ClientInterface
  */
 final class Client
 {
+    /**
+     * @param IndexConfig $config
+     *
+     * @throws TantivyException if the extension is missing or the index cannot be opened/created.
+     */
     public static function openOrCreate(array $config): ClientInterface
     {
         self::ensureExtensionLoaded();
         return ExtClient::openOrCreate($config);
     }
 
+    /**
+     * @param IndexConfig $config
+     *
+     * @throws TantivyException if the extension is missing or the index does not exist.
+     */
     public static function openReadOnly(array $config): ClientInterface
     {
         self::ensureExtensionLoaded();
