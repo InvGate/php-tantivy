@@ -50,8 +50,14 @@ fn parse_doc(state: &IndexState, doc_json: &str) -> Result<TantivyDocument, Stri
 // NOTA (NRT): add/update/delete NUNCA commitean. Una escritura sólo la aplica al writer
 // (en su buffer en memoria); recién `commit()` la hace durable y visible al reader. El commit
 // de tantivy es caro (fsync + segmento nuevo), así que el llamador lo agenda explícitamente
-// (commit cada N escrituras, en los flushes del rebuild/update, y como red de seguridad al
-// destruirse el cliente). Es la misma semántica near-real-time de Elasticsearch.
+// (commit cada N escrituras, y en los flushes del rebuild/update). Es la misma semántica
+// near-real-time de Elasticsearch.
+//
+// CONTRATO DE DURABILIDAD: cerrar el índice (close() manual, __destruct del cliente, o el Drop
+// nativo) NO commitea — sólo libera el estado, y al dropearse el IndexWriter tantivy DESCARTA su
+// buffer no commiteado. No hay "commit de red de seguridad" al destruir: todo lo escrito desde el
+// último commit() se pierde. El llamador DEBE commitear explícitamente antes de soltar el cliente
+// si quiere persistir esas escrituras.
 
 pub fn add_document(state: &mut IndexState, doc_json: &str) -> Result<(), String> {
     let doc = parse_doc(state, doc_json)?;
@@ -140,6 +146,57 @@ mod tests {
         assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 0);
 
         close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_replaces_the_document_for_a_key() {
+        let dir = std::env::temp_dir().join(format!("tv_w_{}_update", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+
+        with_state(h, |s| add_document(s, r#"{"id_key":"7","title":"titulo viejo"}"#)).unwrap();
+        with_state(h, commit).unwrap();
+        assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 1);
+
+        // update = delete-by-key + add en el mismo batch: sigue habiendo un solo doc para la clave.
+        with_state(h, |s| update_document(s, "id_key", "7", r#"{"id_key":"7","title":"titulo nuevo"}"#)).unwrap();
+        with_state(h, commit).unwrap();
+        assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 1);
+
+        let out = with_state(h, |s| crate::query::search(s, r#"{"text":"nuevo","text_fields":["title"],"limit":5}"#)).unwrap();
+        assert!(out.contains("\"id_key\":\"7\""));
+        // el término viejo ya no debe matchear.
+        let old = with_state(h, |s| crate::query::search(s, r#"{"text":"viejo","text_fields":["title"],"limit":5}"#)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&old).unwrap();
+        assert_eq!(parsed["hits"].as_array().unwrap().len(), 0);
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contended_writer_lock_is_marked_with_the_busy_prefix() {
+        // tantivy permite un solo writer por directorio (file-lock exclusivo). Un segundo handle
+        // sobre el mismo dir que intente escribir debe recibir un error prefijado con
+        // WRITER_LOCKED_PREFIX, que los bindings mapean a IndexBusyException. Es la feature de
+        // degradación por contención — hasta ahora sin cobertura.
+        let dir = std::env::temp_dir().join(format!("tv_w_{}_locked", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let h1 = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+        // fuerza la creación del writer en h1: toma el lock exclusivo del directorio.
+        with_state(h1, |s| add_document(s, r#"{"id_key":"1","title":"a"}"#)).unwrap();
+
+        let h2 = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+        let err = with_state(h2, |s| add_document(s, r#"{"id_key":"2","title":"b"}"#)).unwrap_err();
+        assert!(
+            err.starts_with(WRITER_LOCKED_PREFIX),
+            "esperaba prefijo '{WRITER_LOCKED_PREFIX}', obtuve: {err}"
+        );
+
+        close(h1);
+        close(h2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

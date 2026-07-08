@@ -41,6 +41,26 @@ fn default_limit() -> usize {
     20
 }
 
+/// Techo defensivo para `limit`: el valor viene del JSON del caller y `TopDocs` reserva memoria
+/// proporcional a él, así que un valor absurdo (o `usize::MAX`) podría agotar la memoria del worker.
+const MAX_RESULT_LIMIT: usize = 10_000;
+
+/// Techo de tokens de texto por consulta. `input.text` es del caller y por cada token se arman hasta
+/// 3 sub-queries por campo (exacta + fuzzy + prefijo); un texto enorme (p. ej. un paste de miles de
+/// palabras) generaría miles de leaf-queries y una búsqueda carísima. Acotamos y descartamos el resto.
+const MAX_QUERY_TOKENS: usize = 32;
+
+/// Acota los tokens de texto al techo, descartando el excedente.
+fn cap_tokens(mut words: Vec<String>) -> Vec<String> {
+    words.truncate(MAX_QUERY_TOKENS);
+    words
+}
+
+/// Acota el `limit` pedido al techo defensivo.
+fn capped_limit(requested: usize) -> usize {
+    requested.min(MAX_RESULT_LIMIT)
+}
+
 /// distancia de edición aproximada segun el largo del término (parity funcional con similarity 0.6).
 fn fuzzy_distance(term_len: usize) -> u8 {
     if term_len < 3 {
@@ -75,7 +95,17 @@ pub fn search(state: &IndexState, query_json: &str) -> Result<String, String> {
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
 
     // texto: por cada palabra, un OR de [exacto, fuzzy, prefijo] sobre todos los campos de texto; requerido (MUST).
-    let words = tokenize(&input.text);
+    let all_words = tokenize(&input.text);
+    let total_tokens = all_words.len();
+    let words = cap_tokens(all_words);
+    if total_tokens > words.len() {
+        // Operacional: la query traía más tokens que el techo; usamos los primeros y descartamos el
+        // resto. stderr → error log de PHP-FPM (con catch_workers_output). Raro salvo input patológico.
+        eprintln!(
+            "[tantivy] search: query had {total_tokens} tokens; using the first {} and discarding the rest (MAX_QUERY_TOKENS)",
+            words.len()
+        );
+    }
     for word in &words {
         let mut per_word: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for fname in &input.text_fields {
@@ -141,14 +171,16 @@ pub fn search(state: &IndexState, query_json: &str) -> Result<String, String> {
     }
 
     // sin cláusulas -> resultado vacío (equivale a "sin match").
-    if clauses.is_empty() {
+    // `limit == 0` también corta acá: `TopDocs::with_limit(0)` paniquea (assert limit >= 1) y el
+    // valor viene del caller, así que lo tratamos como "pedí 0 resultados" en vez de reventar.
+    if clauses.is_empty() || input.limit == 0 {
         return Ok(json!({"hits": []}).to_string());
     }
 
     let query = BooleanQuery::new(clauses);
     let searcher = state.reader.searcher();
     let top = searcher
-        .search(&query, &TopDocs::with_limit(input.limit))
+        .search(&query, &TopDocs::with_limit(capped_limit(input.limit)))
         .map_err(|e| format!("search falló: {e}"))?;
 
     let mut hits = Vec::new();
@@ -241,5 +273,41 @@ mod tests {
 
         close(h);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn limit_zero_returns_empty_without_panicking() {
+        // `TopDocs::with_limit(0)` panics dentro de tantivy (assert limit >= 1). El límite viene
+        // del JSON del caller, así que un `limit:0` explícito no debe reventar: devuelve vacío.
+        let dir = std::env::temp_dir().join(format!("tv_q_{}_limit0", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+        with_state(h, |s| add_document(s, r#"{"id_key":"1","title":"reset password"}"#)).unwrap();
+        with_state(h, commit).unwrap();
+
+        let q = r#"{"text":"reset","text_fields":["title"],"limit":0}"#;
+        let out = with_state(h, |s| search(s, q)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["hits"].as_array().unwrap().len(), 0);
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capped_limit_clamps_absurd_values_but_preserves_normal_ones() {
+        // Un `limit` gigante del caller reservaría memoria sin techo en el colector. Lo acotamos.
+        assert_eq!(capped_limit(20), 20);
+        assert_eq!(capped_limit(MAX_RESULT_LIMIT), MAX_RESULT_LIMIT);
+        assert_eq!(capped_limit(usize::MAX), MAX_RESULT_LIMIT);
+    }
+
+    #[test]
+    fn cap_tokens_truncates_beyond_the_max_but_keeps_short_queries() {
+        let many: Vec<String> = (0..MAX_QUERY_TOKENS + 8).map(|i| format!("w{i}")).collect();
+        assert_eq!(cap_tokens(many).len(), MAX_QUERY_TOKENS);
+
+        let few: Vec<String> = vec!["reset".into(), "password".into()];
+        assert_eq!(cap_tokens(few).len(), 2);
     }
 }

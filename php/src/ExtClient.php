@@ -21,6 +21,9 @@ final class ExtClient implements ClientInterface
      * (en Rust), así que no cerrarlo lo fuga por toda la vida del worker (reader mmap + FDs de
      * segmentos). El Drop nativo de Tantivy\Native\Index también lo libera al liberarse el objeto;
      * close() es idempotente, así que ambos caminos coexisten sin problema.
+     *
+     * OJO (durabilidad): close() NO commitea — descarta el buffer no commiteado del writer. Si hiciste
+     * writes sin commit(), se pierden al destruirse el cliente. Commiteá explícitamente para persistir.
      */
     public function __destruct()
     {

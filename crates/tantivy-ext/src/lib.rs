@@ -9,16 +9,42 @@ use ext_php_rs::exception::PhpException;
 use tantivy_core::schema::IndexConfig;
 use tantivy_core::{query, registry, writer};
 
-/// Convierte un Result del core en un PhpResult: el Err se lanza como excepción de PHP.
-/// `ExtClient` (userland) la atrapa y re-lanza `Tantivy\TantivyException`, así el tipo de
-/// excepción es el mismo para ambos backends.
-fn php<T>(r: Result<T, String>) -> PhpResult<T> {
-    r.map_err(PhpException::default)
+/// Ejecuta una operación del core dentro de un `catch_unwind` y traduce el resultado a `PhpResult`:
+/// un `Err(String)` se lanza como excepción de PHP, y un PANIC del core (p. ej. un assert interno de
+/// tantivy ante entrada inesperada) se atrapa acá y también se convierte en excepción. Esto es
+/// CRÍTICO: las funciones que ext-php-rs genera para llamar a estos métodos son `extern "C"` y NO
+/// pueden desenrollar; un panic que llegara a ese frame abortaría el proceso entero ("panic in a
+/// function that cannot unwind"), matando al worker PHP-FPM. Atrapándolo antes, un request tóxico
+/// falla con una excepción en vez de tumbar el worker. `AssertUnwindSafe` es correcto porque el
+/// único estado compartido es la tabla global del registro, cuyo lock ya se recupera de
+/// envenenamiento (ver registry::lock_table).
+fn guard<T>(f: impl FnOnce() -> Result<T, String>) -> PhpResult<T> {
+    catch_core(f).map_err(PhpException::default)
 }
 
-fn parse_config(config_json: &str) -> PhpResult<IndexConfig> {
-    serde_json::from_str(config_json)
-        .map_err(|e| PhpException::default(format!("config JSON inválido: {e}")))
+/// Núcleo de `guard` sin dependencia de PHP: corre `f` bajo `catch_unwind` y baja un panic a
+/// `Err(String)`. Separado para poder testearlo con `cargo test` (el binario de test no linkea los
+/// símbolos de PHP, así que no puede construir `PhpException`).
+fn catch_core<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => Err(format!("panic en el núcleo tantivy: {}", panic_detail(&payload))),
+    }
+}
+
+/// Extrae el mensaje de un payload de panic (`&str` o `String`); si no, un genérico.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "causa desconocida".to_string()
+    }
+}
+
+fn parse_config(config_json: &str) -> Result<IndexConfig, String> {
+    serde_json::from_str(config_json).map_err(|e| format!("config JSON inválido: {e}"))
 }
 
 #[php_class]
@@ -42,40 +68,40 @@ impl Drop for Index {
 impl Index {
     #[php(name = "openOrCreate")]
     pub fn open_or_create(config_json: String) -> PhpResult<Self> {
-        let cfg = parse_config(&config_json)?;
-        let handle = php(registry::open_or_create(cfg))?;
+        let handle = guard(|| registry::open_or_create(parse_config(&config_json)?))?;
         Ok(Self { handle })
     }
 
     #[php(name = "openReadOnly")]
     pub fn open_read_only(config_json: String) -> PhpResult<Self> {
-        let cfg = parse_config(&config_json)?;
-        let handle = php(registry::open_read_only(cfg))?;
+        let handle = guard(|| registry::open_read_only(parse_config(&config_json)?))?;
         Ok(Self { handle })
     }
 
     #[php(name = "addDocument")]
     pub fn add_document(&self, doc_json: String) -> PhpResult<()> {
-        php(registry::with_state(self.handle, |s| writer::add_document(s, &doc_json)))
+        guard(|| registry::with_state(self.handle, |s| writer::add_document(s, &doc_json)))
     }
 
     #[php(name = "updateDocument")]
     pub fn update_document(&self, key_field: String, key_value: String, doc_json: String) -> PhpResult<()> {
-        php(registry::with_state(self.handle, |s| {
-            writer::update_document(s, &key_field, &key_value, &doc_json)
-        }))
+        guard(|| {
+            registry::with_state(self.handle, |s| {
+                writer::update_document(s, &key_field, &key_value, &doc_json)
+            })
+        })
     }
 
     #[php(name = "deleteDocument")]
     pub fn delete_document(&self, key_field: String, key_value: String) -> PhpResult<()> {
-        php(registry::with_state(self.handle, |s| {
-            writer::delete_by_id(s, &key_field, &key_value)
-        }))
+        guard(|| {
+            registry::with_state(self.handle, |s| writer::delete_by_id(s, &key_field, &key_value))
+        })
     }
 
     #[php(name = "commit")]
     pub fn commit(&self) -> PhpResult<()> {
-        php(registry::with_state(self.handle, writer::commit))
+        guard(|| registry::with_state(self.handle, writer::commit))
     }
 
     #[php(name = "optimize")]
@@ -86,13 +112,12 @@ impl Index {
 
     #[php(name = "docCount")]
     pub fn doc_count(&self) -> PhpResult<i64> {
-        let n = php(registry::with_state(self.handle, |s| s.doc_count()))?;
-        Ok(n as i64)
+        guard(|| registry::with_state(self.handle, |s| s.doc_count().map(|n| n as i64)))
     }
 
     #[php(name = "search")]
     pub fn search(&self, query_json: String) -> PhpResult<String> {
-        php(registry::with_state(self.handle, |s| query::search(s, &query_json)))
+        guard(|| registry::with_state(self.handle, |s| query::search(s, &query_json)))
     }
 
     #[php(name = "close")]
@@ -123,6 +148,26 @@ mod tests {
             },
             writer_heap_bytes: 15_000_000,
         }
+    }
+
+    #[test]
+    fn catch_core_converts_a_panic_into_an_error_instead_of_aborting() {
+        // En el borde real de la extensión, un panic que cruza el frame extern "C" aborta el worker
+        // ("panic in a function that cannot unwind"). catch_core lo atrapa ANTES de llegar a ese
+        // frame y lo baja a Err (que guard lanza como excepción de PHP). Silenciamos el hook para no
+        // ensuciar la salida con el backtrace esperado.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = catch_core(|| -> Result<i64, String> { panic!("boom del core") });
+        std::panic::set_hook(prev);
+        assert!(result.is_err(), "el panic debía convertirse en Err, no propagarse/abortar");
+        assert!(result.unwrap_err().contains("panic en el núcleo"));
+    }
+
+    #[test]
+    fn catch_core_passes_through_ok_and_err_unchanged() {
+        assert_eq!(catch_core(|| -> Result<i64, String> { Ok(7) }).unwrap(), 7);
+        assert!(catch_core(|| -> Result<i64, String> { Err("nope".into()) }).is_err());
     }
 
     #[test]
