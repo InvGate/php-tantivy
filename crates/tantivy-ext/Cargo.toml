@@ -1,0 +1,13 @@
+[package]
+name = "tantivy-ext"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tantivyphp_ext"
+crate-type = ["cdylib"]
+
+[dependencies]
+tantivy-core.workspace = true
+serde_json.workspace = true
+ext-php-rs = "0.15"

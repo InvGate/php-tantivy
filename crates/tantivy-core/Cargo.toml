@@ -1,0 +1,12 @@
+[package]
+name = "tantivy-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tantivy_core"
+
+[dependencies]
+tantivy.workspace = true
+serde.workspace = true
+serde_json.workspace = true

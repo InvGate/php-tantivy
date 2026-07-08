@@ -1,0 +1,12 @@
+{
+    "name": "invgate/php-tantivy",
+    "description": "PHP client for the tantivy search engine, via a Rust cdylib (FFI) or a native ext-php-rs extension.",
+    "type": "library",
+    "license": "MIT OR Apache-2.0",
+    "require": { "php": ">=8.4" },
+    "suggest": {
+        "ext-ffi": "Required only for the FFI backend (FfiClient). Not needed when the native tantivyphp extension is loaded."
+    },
+    "autoload": { "psr-4": { "Tantivy\\": "src/" } },
+    "autoload-dev": { "psr-4": { "Tantivy\\Tests\\": "tests/" } }
+}

@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/tantivy-core", "crates/tantivy-ffi", "crates/tantivy-ext"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+description = "Embed the tantivy search engine in PHP, via a Rust cdylib (FFI) or a native ext-php-rs extension."
+repository = "https://github.com/InvGate/php-tantivy"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tantivy = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tantivy-core = { path = "crates/tantivy-core" }

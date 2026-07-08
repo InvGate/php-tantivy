@@ -1,0 +1,17 @@
+# Rust build output
+/target
+
+# PHP
+/php/vendor/
+
+# Internal working docs — NOT for publication (kept locally, never committed)
+/HANDOFF.md
+/docs/superpowers/
+/.superpowers/
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
