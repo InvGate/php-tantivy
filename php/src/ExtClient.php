@@ -38,7 +38,7 @@ final class ExtClient implements ClientInterface
         try {
             $this->index->addDocument(self::json($doc));
         } catch (\Throwable $e) {
-            throw new TantivyException('add_document falló: ' . $e->getMessage(), 0, $e);
+            throw TantivyException::forOperation('add_document', $e->getMessage(), $e);
         }
     }
 
@@ -47,7 +47,7 @@ final class ExtClient implements ClientInterface
         try {
             $this->index->updateDocument($keyField, $keyValue, self::json($doc));
         } catch (\Throwable $e) {
-            throw new TantivyException('update_document falló: ' . $e->getMessage(), 0, $e);
+            throw TantivyException::forOperation('update_document', $e->getMessage(), $e);
         }
     }
 
@@ -56,7 +56,7 @@ final class ExtClient implements ClientInterface
         try {
             $this->index->deleteDocument($keyField, $keyValue);
         } catch (\Throwable $e) {
-            throw new TantivyException('delete_document falló: ' . $e->getMessage(), 0, $e);
+            throw TantivyException::forOperation('delete_document', $e->getMessage(), $e);
         }
     }
 
@@ -95,7 +95,12 @@ final class ExtClient implements ClientInterface
         } catch (\Throwable $e) {
             throw new TantivyException('search falló: ' . $e->getMessage(), 0, $e);
         }
-        $decoded = json_decode($json, true);
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            // no tragar una respuesta malformada como "0 resultados": es un error real del backend.
+            throw TantivyException::forOperation('search', 'respuesta JSON inválida', $e);
+        }
         return $decoded['hits'] ?? [];
     }
 

@@ -66,21 +66,21 @@ final class FfiClient implements ClientInterface
     public function addDocument(array $doc): void
     {
         if (self::ffi()->tv_add_document($this->handle, self::json($doc)) !== 0) {
-            throw new TantivyException('add_document falló: ' . self::lastError());
+            throw TantivyException::forOperation('add_document', self::lastError());
         }
     }
 
     public function updateDocument(string $keyField, string $keyValue, array $doc): void
     {
         if (self::ffi()->tv_update_document($this->handle, $keyField, $keyValue, self::json($doc)) !== 0) {
-            throw new TantivyException('update_document falló: ' . self::lastError());
+            throw TantivyException::forOperation('update_document', self::lastError());
         }
     }
 
     public function deleteDocument(string $keyField, string $keyValue): void
     {
         if (self::ffi()->tv_delete_document($this->handle, $keyField, $keyValue) !== 0) {
-            throw new TantivyException('delete_document falló: ' . self::lastError());
+            throw TantivyException::forOperation('delete_document', self::lastError());
         }
     }
 
@@ -116,7 +116,12 @@ final class FfiClient implements ClientInterface
         }
         $json = FFI::string($ptr);
         self::ffi()->tv_string_free($ptr);
-        $decoded = json_decode($json, true);
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            // no tragar una respuesta malformada como "0 resultados": es un error real del backend.
+            throw TantivyException::forOperation('search', 'respuesta JSON inválida', $e);
+        }
         return $decoded['hits'] ?? [];
     }
 

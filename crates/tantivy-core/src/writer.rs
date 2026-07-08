@@ -1,14 +1,25 @@
-use tantivy::{TantivyDocument, Term};
+use tantivy::{TantivyDocument, TantivyError, Term};
 
 use crate::registry::IndexState;
 
-/// Obtiene (o crea) el IndexWriter cacheado del estado. Bloquea si otro proceso tiene el lock del dir.
+/// Prefijo estable y neutro (no depende del idioma del mensaje) que marca el caso "el writer lock
+/// exclusivo del índice está tomado por otro proceso" (p. ej. un rebuild en curso). Los bindings PHP
+/// lo mapean a `Tantivy\IndexBusyException` para que los consumidores chequeen el TIPO, no el texto.
+/// Es un contrato: si se cambia acá, actualizar los clientes (FfiClient/ExtClient).
+pub const WRITER_LOCKED_PREFIX: &str = "index_locked:";
+
+/// Obtiene (o crea) el IndexWriter cacheado del estado. tantivy permite un solo writer por
+/// directorio; si el lock está tomado, `writer()` devuelve `LockFailure` — lo marcamos con
+/// WRITER_LOCKED_PREFIX en vez de tratarlo como un error genérico.
 fn ensure_writer(state: &mut IndexState) -> Result<&mut tantivy::IndexWriter, String> {
     if state.writer.is_none() {
-        let w = state
-            .index
-            .writer(state.writer_heap_bytes)
-            .map_err(|e| format!("no se pudo abrir el writer: {e}"))?;
+        let w = match state.index.writer(state.writer_heap_bytes) {
+            Ok(w) => w,
+            Err(TantivyError::LockFailure(_, _)) => {
+                return Err(format!("{WRITER_LOCKED_PREFIX} writer lock ocupado (¿rebuild en curso?)"));
+            }
+            Err(e) => return Err(format!("no se pudo abrir el writer: {e}")),
+        };
         state.writer = Some(w);
     }
     Ok(state.writer.as_mut().unwrap())

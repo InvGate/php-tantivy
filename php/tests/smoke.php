@@ -6,6 +6,7 @@ declare(strict_types=1);
 // según qué haya cargado. Sale con código != 0 y un mensaje si algo falla.
 
 require __DIR__ . '/../src/TantivyException.php';
+require __DIR__ . '/../src/IndexBusyException.php';
 require __DIR__ . '/../src/ClientInterface.php';
 require __DIR__ . '/../src/FfiClient.php';
 require __DIR__ . '/../src/ExtClient.php';
