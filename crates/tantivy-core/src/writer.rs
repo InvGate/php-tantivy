@@ -16,7 +16,9 @@ fn ensure_writer(state: &mut IndexState) -> Result<&mut tantivy::IndexWriter, St
         let w = match state.index.writer(state.writer_heap_bytes) {
             Ok(w) => w,
             Err(TantivyError::LockFailure(_, _)) => {
-                return Err(format!("{WRITER_LOCKED_PREFIX} writer lock ocupado (¿rebuild en curso?)"));
+                return Err(format!(
+                    "{WRITER_LOCKED_PREFIX} writer lock ocupado (¿rebuild en curso?)"
+                ));
             }
             Err(e) => return Err(format!("no se pudo abrir el writer: {e}")),
         };
@@ -67,7 +69,11 @@ pub fn add_document(state: &mut IndexState, doc_json: &str) -> Result<(), String
     Ok(())
 }
 
-pub fn delete_by_id(state: &mut IndexState, key_field: &str, key_value: &str) -> Result<(), String> {
+pub fn delete_by_id(
+    state: &mut IndexState,
+    key_field: &str,
+    key_value: &str,
+) -> Result<(), String> {
     let field = state
         .schema
         .get_field(key_field)
@@ -91,7 +97,8 @@ pub fn update_document(
     let doc = parse_doc(state, doc_json)?;
     let w = ensure_writer(state)?;
     w.delete_term(term);
-    w.add_document(doc).map_err(|e| format!("add en update falló: {e}"))?;
+    w.add_document(doc)
+        .map_err(|e| format!("add en update falló: {e}"))?;
     Ok(())
 }
 
@@ -132,7 +139,10 @@ mod tests {
         let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
 
         // add NO commitea: el doc queda en el buffer del writer, invisible al reader.
-        with_state(h, |s| add_document(s, r#"{"id_key":"42","title":"hola mundo"}"#)).unwrap();
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"42","title":"hola mundo"}"#)
+        })
+        .unwrap();
         assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 0);
 
         // recién el commit explícito lo hace visible.
@@ -155,19 +165,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
 
-        with_state(h, |s| add_document(s, r#"{"id_key":"7","title":"titulo viejo"}"#)).unwrap();
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"7","title":"titulo viejo"}"#)
+        })
+        .unwrap();
         with_state(h, commit).unwrap();
         assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 1);
 
         // update = delete-by-key + add en el mismo batch: sigue habiendo un solo doc para la clave.
-        with_state(h, |s| update_document(s, "id_key", "7", r#"{"id_key":"7","title":"titulo nuevo"}"#)).unwrap();
+        with_state(h, |s| {
+            update_document(s, "id_key", "7", r#"{"id_key":"7","title":"titulo nuevo"}"#)
+        })
+        .unwrap();
         with_state(h, commit).unwrap();
         assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 1);
 
-        let out = with_state(h, |s| crate::query::search(s, r#"{"text":"nuevo","text_fields":["title"],"limit":5}"#)).unwrap();
+        let out = with_state(h, |s| {
+            crate::query::search(s, r#"{"text":"nuevo","text_fields":["title"],"limit":5}"#)
+        })
+        .unwrap();
         assert!(out.contains("\"id_key\":\"7\""));
         // el término viejo ya no debe matchear.
-        let old = with_state(h, |s| crate::query::search(s, r#"{"text":"viejo","text_fields":["title"],"limit":5}"#)).unwrap();
+        let old = with_state(h, |s| {
+            crate::query::search(s, r#"{"text":"viejo","text_fields":["title"],"limit":5}"#)
+        })
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&old).unwrap();
         assert_eq!(parsed["hits"].as_array().unwrap().len(), 0);
 

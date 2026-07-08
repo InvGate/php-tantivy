@@ -4,8 +4,8 @@
 // attribute (cfg(windows) is false there), so the stable build is unaffected.
 #![cfg_attr(windows, feature(abi_vectorcall))]
 
-use ext_php_rs::prelude::*;
 use ext_php_rs::exception::PhpException;
+use ext_php_rs::prelude::*;
 use tantivy_core::schema::IndexConfig;
 use tantivy_core::{query, registry, writer};
 
@@ -28,7 +28,10 @@ fn guard<T>(f: impl FnOnce() -> Result<T, String>) -> PhpResult<T> {
 fn catch_core<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => r,
-        Err(payload) => Err(format!("panic en el núcleo tantivy: {}", panic_detail(&payload))),
+        Err(payload) => Err(format!(
+            "panic en el núcleo tantivy: {}",
+            panic_detail(&payload)
+        )),
     }
 }
 
@@ -84,7 +87,12 @@ impl Index {
     }
 
     #[php(name = "updateDocument")]
-    pub fn update_document(&self, key_field: String, key_value: String, doc_json: String) -> PhpResult<()> {
+    pub fn update_document(
+        &self,
+        key_field: String,
+        key_value: String,
+        doc_json: String,
+    ) -> PhpResult<()> {
         guard(|| {
             registry::with_state(self.handle, |s| {
                 writer::update_document(s, &key_field, &key_value, &doc_json)
@@ -95,7 +103,9 @@ impl Index {
     #[php(name = "deleteDocument")]
     pub fn delete_document(&self, key_field: String, key_value: String) -> PhpResult<()> {
         guard(|| {
-            registry::with_state(self.handle, |s| writer::delete_by_id(s, &key_field, &key_value))
+            registry::with_state(self.handle, |s| {
+                writer::delete_by_id(s, &key_field, &key_value)
+            })
         })
     }
 
@@ -160,7 +170,10 @@ mod tests {
         std::panic::set_hook(Box::new(|_| {}));
         let result = catch_core(|| -> Result<i64, String> { panic!("boom del core") });
         std::panic::set_hook(prev);
-        assert!(result.is_err(), "el panic debía convertirse en Err, no propagarse/abortar");
+        assert!(
+            result.is_err(),
+            "el panic debía convertirse en Err, no propagarse/abortar"
+        );
         assert!(result.unwrap_err().contains("panic en el núcleo"));
     }
 

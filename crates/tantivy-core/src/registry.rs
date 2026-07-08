@@ -34,7 +34,9 @@ fn table() -> &'static Mutex<HashMap<u64, IndexState>> {
 /// panic y dejaría la tabla inutilizable para TODO el proceso (crítico en un worker PHP-FPM de larga
 /// vida). Un panic aislado no corrompe el HashMap en sí, así que recuperamos el guard y seguimos.
 fn lock_table() -> std::sync::MutexGuard<'static, HashMap<u64, IndexState>> {
-    table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    table()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Abre un índice existente o lo crea en `cfg.path`. Devuelve un handle opaco.
@@ -57,8 +59,12 @@ pub fn open_or_create(cfg: IndexConfig) -> Result<u64, String> {
 /// ni mutar el índice (así no requiere permisos de escritura, y un índice no construido
 /// falla de forma explícita en vez de crear uno vacío que devolvería "0 resultados").
 pub fn open_read_only(cfg: IndexConfig) -> Result<u64, String> {
-    let index = Index::open_in_dir(&cfg.path)
-        .map_err(|e| format!("no se pudo abrir el índice (solo-lectura) en '{}': {e}", cfg.path))?;
+    let index = Index::open_in_dir(&cfg.path).map_err(|e| {
+        format!(
+            "no se pudo abrir el índice (solo-lectura) en '{}': {e}",
+            cfg.path
+        )
+    })?;
     register_state(index, &cfg.id_field, cfg.writer_heap_bytes)
 }
 
@@ -155,8 +161,7 @@ mod tests {
 
     #[test]
     fn rejects_incompatible_schema_on_reopen() {
-        let dir =
-            std::env::temp_dir().join(format!("tv_test_{}_incompatible", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tv_test_{}_incompatible", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let h1 = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
@@ -213,7 +218,10 @@ mod tests {
         // índice inexistente: read-only NO debe crearlo, debe fallar explícitamente.
         let missing = open_read_only(cfg(dir.to_str().unwrap()));
         assert!(missing.is_err());
-        assert!(!dir.exists(), "read-only no debe crear el directorio del índice");
+        assert!(
+            !dir.exists(),
+            "read-only no debe crear el directorio del índice"
+        );
 
         // creamos el índice con open_or_create, luego lo abrimos read-only.
         let h1 = open_or_create(cfg(dir.to_str().unwrap())).unwrap();

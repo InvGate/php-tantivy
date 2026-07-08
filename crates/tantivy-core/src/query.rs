@@ -120,7 +120,10 @@ pub fn search(state: &IndexState, query_json: &str) -> Result<String, String> {
             ));
             let dist = fuzzy_distance(word.chars().count());
             if dist > 0 {
-                per_word.push((Occur::Should, Box::new(FuzzyTermQuery::new(term, dist, true))));
+                per_word.push((
+                    Occur::Should,
+                    Box::new(FuzzyTermQuery::new(term, dist, true)),
+                ));
             }
             if word.chars().count() >= 2 {
                 if let Ok(rq) =
@@ -282,7 +285,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tv_q_{}_limit0", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
-        with_state(h, |s| add_document(s, r#"{"id_key":"1","title":"reset password"}"#)).unwrap();
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"1","title":"reset password"}"#)
+        })
+        .unwrap();
         with_state(h, commit).unwrap();
 
         let q = r#"{"text":"reset","text_fields":["title"],"limit":0}"#;
