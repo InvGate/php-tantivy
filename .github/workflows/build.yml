@@ -29,7 +29,7 @@ jobs:
     name: Rust tests + clippy (stable, PHP 8.4 NTS)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # php-config / dev headers are needed even for `cargo test`: compiling tantivy-ext links
       # against PHP internals via ext-php-rs, so the toolchain must find them.
@@ -74,7 +74,7 @@ jobs:
     # Lightweight: fmt reads source, audit/deny read Cargo.lock, machete parses manifests — none
     # need clang or a full build (clippy runs in the `test` job against a real compile).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust stable (+ rustfmt)
         uses: dtolnay/rust-toolchain@stable
@@ -112,7 +112,7 @@ jobs:
     name: PHP static analysis (PHPStan level 8)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install PHP 8.4 + PHPStan
         uses: shivammathur/setup-php@v2
@@ -135,7 +135,7 @@ jobs:
     # PHP smoke/PHPUnit suites, not by Rust tests, so measuring them here would undercount.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust stable (+ llvm-tools-preview)
         uses: dtolnay/rust-toolchain@stable
@@ -166,7 +166,7 @@ jobs:
     # Only build once the Rust tests AND the lint/security/PHP-analysis gates are green.
     needs: [test, lint, php-lint]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install PHP 8.4 NTS + dev headers
         uses: shivammathur/setup-php@v2
@@ -229,7 +229,7 @@ jobs:
     needs: [test, lint, php-lint]
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install PHP 8.4 NTS
         uses: shivammathur/setup-php@v2
