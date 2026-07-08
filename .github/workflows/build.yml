@@ -7,11 +7,14 @@ name: build
 # Scope is pinned to PHP 8.4 NTS, x86_64, per the project's stated constraint (see spec §10
 # no-objetivos: no ZTS, no other PHP versions, no macOS).
 #
-# The Windows ext build mirrors ext-php-rs's own upstream CI, which builds its extension on
-# windows-latest with exactly this recipe: shivammathur/setup-php + nightly Rust, no special
-# PHP dev-pack step and no forced linker (setup-php provides the dev files ext-php-rs needs).
-# That alignment is why the Windows job has a real chance of passing on its first run; until it
-# has gone green here at least once it stays `continue-on-error` (see the windows job).
+# Pipeline shape: `test` (Rust tests + clippy) and `lint` (fmt + supply-chain checks) run first
+# and GATE the builds. `build-linux` / `build-windows` only run once BOTH gates are green
+# (needs: [test, lint]) — no build minutes spent, and no artifacts published, on a red tree. The
+# PHP smoke/PHPUnit suites need the compiled extension, so they run inside build-linux against the
+# freshly built .so rather than in the pre-build test gate.
+#
+# The Windows ext build mirrors ext-php-rs's own upstream CI (setup-php + nightly Rust, no dev-pack
+# step, default MSVC linker). It stays `continue-on-error` until it has gone green here once.
 
 on:
   push:
@@ -22,22 +25,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  linux:
-    name: Linux (stable Rust, PHP 8.4 NTS) — build + test + both backend smokes
+  test:
+    name: Rust tests + clippy (stable, PHP 8.4 NTS)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # php-config / dev headers are needed even for `cargo test`: compiling tantivy-ext links
+      # against PHP internals via ext-php-rs, so the toolchain must find them.
       - name: Install PHP 8.4 NTS + dev headers
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          # NTS (no thread-safety) is this action's Linux default; the ext extension is built
-          # against whichever ABI php-config reports, so we assert NTS explicitly below rather
-          # than trust the default silently.
-          tools: phpunit
-          # The ext backend IS the extension under test (loaded via -d extension= in the smoke
-          # and phpunit steps), so no PHP extension needs to be preinstalled here.
+          tools: none
           extensions: none
 
       - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
@@ -46,8 +46,13 @@ jobs:
       - name: Install clang (needed by ext-php-rs's bindgen step)
         run: sudo apt-get update && sudo apt-get install -y clang
 
-      - name: Install Rust stable
+      - name: Install Rust stable (+ clippy)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
 
       - name: Show toolchain versions
         run: |
@@ -57,47 +62,17 @@ jobs:
           php -v
           php-config --version
 
-      # Builds crates/tantivy-ext (libtantivyphp_ext.so) from the workspace root. On this Linux
-      # setup (stable Rust + clang present), no special env vars (LIBCLANG_PATH /
-      # BINDGEN_EXTRA_CLANG_ARGS) are needed — see progress notes in
-      # docs/superpowers/sdd/progress.md for the historical libclang-only fallback.
-      - name: cargo build --release
-        run: cargo build --release
-
       - name: cargo test (tantivy-core + tantivy-ext)
         run: cargo test
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --release --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Smoke test — ext backend (extension=, no ffi.enable needed)
-        run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" php/tests/smoke.php
-
-      # PHPUnit suite (php/tests/*Test.php) with the freshly built extension loaded. Unlike the
-      # smoke script this exercises the userland facade (Client/ExtClient) through the real test
-      # harness. The ext .so must be loaded via -d extension= (it is the class under test).
-      - name: PHPUnit — ext backend
-        run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" "$(which phpunit)" -c php/phpunit.xml
-
-      # Package the Linux ext artifact: the ext cdylib renamed to tantivyphp.so so it drops
-      # straight into extension_dir per the install guide.
-      - name: Stage Linux artifacts
-        run: |
-          mkdir -p dist/linux
-          cp target/release/libtantivyphp_ext.so dist/linux/tantivyphp.so
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tantivyphp-linux-x64-php84nts
-          path: dist/linux/*
-          if-no-files-found: error
-
-  checks:
+  lint:
     name: Lint & security (rustfmt, audit, deny, machete)
     runs-on: ubuntu-latest
     # Lightweight: fmt reads source, audit/deny read Cargo.lock, machete parses manifests — none
-    # need clang or a full build (clippy already runs in the linux job against a real compile).
+    # need clang or a full build (clippy runs in the `test` job against a real compile).
     steps:
       - uses: actions/checkout@v4
 
@@ -133,12 +108,72 @@ jobs:
       - name: cargo machete (unused dependencies)
         run: cargo machete
 
-  windows:
-    name: Windows (nightly Rust, MSVC, PHP 8.4 NTS) — ext build spike [gated]
+  build-linux:
+    name: Build + integration (Linux, PHP 8.4 NTS)
+    runs-on: ubuntu-latest
+    # Only build once the Rust tests AND the lint/security gates are green.
+    needs: [test, lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP 8.4 NTS + dev headers
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          # phpunit is used by the PHPUnit step below; the ext .so is loaded via -d extension=,
+          # so no PHP extension needs to be preinstalled here.
+          tools: phpunit
+          extensions: none
+
+      - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
+        run: php -v | grep -q 'NTS' || { echo "::error::expected an NTS PHP build, got:"; php -v; exit 1; }
+
+      - name: Install clang (needed by ext-php-rs's bindgen step)
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Builds crates/tantivy-ext (libtantivyphp_ext.so) from the workspace root. On this Linux
+      # setup (stable Rust + clang present), no special env vars (LIBCLANG_PATH /
+      # BINDGEN_EXTRA_CLANG_ARGS) are needed — see progress notes in
+      # docs/superpowers/sdd/progress.md for the historical libclang-only fallback.
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: Smoke test — ext backend (extension=, no ffi.enable needed)
+        run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" php/tests/smoke.php
+
+      # PHPUnit suite (php/tests/*Test.php) with the freshly built extension loaded. Unlike the
+      # smoke script this exercises the userland facade (Client/ExtClient) through the real test
+      # harness. The ext .so must be loaded via -d extension= (it is the class under test).
+      - name: PHPUnit — ext backend
+        run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" "$(which phpunit)" -c php/phpunit.xml
+
+      # Package the Linux ext artifact: the ext cdylib renamed to tantivyphp.so so it drops
+      # straight into extension_dir per the install guide.
+      - name: Stage Linux artifacts
+        run: |
+          mkdir -p dist/linux
+          cp target/release/libtantivyphp_ext.so dist/linux/tantivyphp.so
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tantivyphp-linux-x64-php84nts
+          path: dist/linux/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (Windows, nightly Rust, MSVC, PHP 8.4 NTS) — spike [gated]
     runs-on: windows-latest
-    # Recipe mirrors ext-php-rs's own upstream Windows CI (setup-php + nightly, no dev-pack step,
-    # default MSVC linker). Kept `continue-on-error: true` only until this job has gone green here
-    # at least once — a Windows-ext failure then never blocks the pipeline. Flip to false once green.
+    # Only after the Rust tests + lint gates pass. Recipe mirrors ext-php-rs's own upstream Windows
+    # CI. Kept `continue-on-error: true` only until this job has gone green here at least once — a
+    # Windows-ext failure then never blocks the pipeline. Flip to false once green.
+    needs: [test, lint]
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
