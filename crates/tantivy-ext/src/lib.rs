@@ -1,3 +1,9 @@
+// ext-php-rs uses the `vectorcall` calling convention to call back into PHP internals on Windows.
+// On recent nightlies that ABI is feature-gated, so the consuming crate must opt in. Windows is
+// built with nightly (see the Windows CI job); Linux/macOS build on stable and never see this
+// attribute (cfg(windows) is false there), so the stable build is unaffected.
+#![cfg_attr(windows, feature(abi_vectorcall))]
+
 use ext_php_rs::prelude::*;
 use ext_php_rs::exception::PhpException;
 use tantivy_core::schema::IndexConfig;

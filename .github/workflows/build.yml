@@ -36,7 +36,9 @@ jobs:
           # against whichever ABI php-config reports, so we assert NTS explicitly below rather
           # than trust the default silently.
           tools: none
-          extensions: none
+          # ffi must be loaded for the FFI-backend smoke; ffi.enable=1 alone does nothing if the
+          # extension isn't present. The ext-backend smoke needs no PHP extension of its own.
+          extensions: ffi
           ini-values: ffi.enable=1
 
       - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
