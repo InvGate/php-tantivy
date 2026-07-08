@@ -27,6 +27,17 @@ pub struct Index {
     handle: u64,
 }
 
+/// RAII: cuando PHP libera el objeto `Tantivy\Native\Index` (refcount a 0 / GC), ext-php-rs dropea
+/// este struct y liberamos el estado del registro. Sin esto, cada open sin un close() explícito fuga
+/// un IndexState (reader mmap + FDs de segmentos, y hasta el heap del writer) por toda la vida del
+/// proceso — crítico en un worker PHP-FPM de larga vida que abre un índice por request. close() es
+/// idempotente, así que un close() manual previo más este Drop no se pisan.
+impl Drop for Index {
+    fn drop(&mut self) {
+        registry::close(self.handle);
+    }
+}
+
 #[php_impl]
 impl Index {
     #[php(name = "openOrCreate")]
@@ -69,7 +80,7 @@ impl Index {
 
     #[php(name = "optimize")]
     pub fn optimize(&self) -> PhpResult<()> {
-        // v1: no-op, igual que el path FFI (tv_optimize).
+        // v1: no-op (el merge se agenda en el plan de rebuild). Nunca falla.
         Ok(())
     }
 
@@ -94,4 +105,42 @@ impl Index {
 #[php_module]
 pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
     module.class::<Index>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tantivy_core::schema::{FieldsDescriptor, IndexConfig};
+
+    fn cfg(path: &str) -> IndexConfig {
+        IndexConfig {
+            path: path.to_string(),
+            id_field: "id_key".into(),
+            fields: FieldsDescriptor {
+                text: vec!["title".into()],
+                keys: vec!["id_key".into()],
+                attributes: vec![],
+            },
+            writer_heap_bytes: 15_000_000,
+        }
+    }
+
+    #[test]
+    fn dropping_index_releases_the_registry_handle() {
+        let dir = std::env::temp_dir().join(format!("tv_ext_drop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let handle = registry::open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+        let index = Index { handle };
+        drop(index);
+
+        // Si Drop cerró el handle, close() acá devuelve false (ya no está). Sin Drop, el estado
+        // seguiría en el registro (fuga) y close() devolvería true.
+        assert!(
+            !registry::close(handle),
+            "Drop debía liberar el handle del registro"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

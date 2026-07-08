@@ -2,52 +2,33 @@
 
 Embed the [tantivy](https://github.com/quickwit-oss/tantivy) search engine (Rust) in PHP.
 
-The Rust engine is exposed to PHP through **two interchangeable backends** that share the
-same core, so you can pick whichever your environment allows:
-
-| Backend | Loaded via | Needs `ffi.enable`? | Artifact |
-|---|---|---|---|
-| **FFI** | `FFI::cdef` | yes | `libtantivyphp.so` / `tantivyphp.dll` (plain cdylib, PHP-version-independent) |
-| **Native extension** | `extension=` in `php.ini` | **no** | `libtantivyphp_ext.so` / `tantivyphp_ext.dll` (built with [ext-php-rs](https://github.com/davidcole1340/ext-php-rs)) |
-
-Use the FFI backend when FFI is available; use the native extension when a hardened
-environment forbids `ffi.enable`. Both are behaviorally identical — same engine, same
-JSON boundary, same results.
+The Rust engine is exposed to PHP as a **native PHP extension** built with
+[ext-php-rs](https://github.com/davidcole1340/ext-php-rs) and loaded via `extension=` in
+`php.ini` — no `ffi.enable` required. Artifact: `libtantivyphp_ext.so` / `tantivyphp_ext.dll`.
 
 ## Requirements
 
 - PHP **8.4**, NTS, x86_64 (Linux or Windows)
-- For the FFI backend: `ffi.enable=1` and the cdylib on disk
-- For the native extension: the extension loaded via `php.ini` (no FFI)
+- The extension loaded via `php.ini`
 
 ## Install / build
 
 See [docs/BUILD.md](docs/BUILD.md). In short:
 
 ```bash
-cargo build --release        # builds both libtantivyphp.so and libtantivyphp_ext.so
+cargo build --release        # builds target/release/libtantivyphp_ext.so
 ```
 
-Then either:
+Then load it:
 
 ```ini
-; FFI backend
-ffi.enable=1
-; and point TANTIVYPHP_LIB / TANTIVYPHP_HEADER at the cdylib + include/tantivyphp.h
-```
-
-or:
-
-```ini
-; native extension backend
 extension=tantivyphp_ext.so
 ```
 
 ## Usage
 
-The PHP-facing API is a single facade, `Tantivy\Client`, which auto-selects the backend
-(native extension if loaded, else FFI). Consumers depend only on `Tantivy\Client` and
-`Tantivy\ClientInterface`.
+The PHP-facing API is a single facade, `Tantivy\Client`, backed by the native extension.
+Consumers depend only on `Tantivy\Client` and `Tantivy\ClientInterface`.
 
 ```php
 use Tantivy\Client;
@@ -85,18 +66,15 @@ from refresh; batch your writes and commit periodically for throughput.
 
 ```
 crates/tantivy-core   Rust engine (schema, index registry, writer, query) — binding-agnostic
-crates/tantivy-ffi    C-ABI cdylib (the FFI backend)
-crates/tantivy-ext    ext-php-rs native extension (the extension backend)
-include/tantivyphp.h  C header for the FFI backend
-php/src               PHP client: Client (facade), ClientInterface, FfiClient, ExtClient
-php/tests/smoke.php   backend-agnostic smoke test
+crates/tantivy-ext    ext-php-rs native extension
+php/src               PHP client: Client (facade), ClientInterface, ExtClient
+php/tests/smoke.php   smoke test (requires the extension loaded)
 ```
 
 ## Testing
 
 ```bash
-cargo test                                                    # Rust core + FFI roundtrip
-TANTIVYPHP_LIB=target/release/libtantivyphp.so php -d ffi.enable=1 php/tests/smoke.php
+cargo test                                                    # Rust core + ext
 php -d extension=target/release/libtantivyphp_ext.so php/tests/smoke.php
 ```
 

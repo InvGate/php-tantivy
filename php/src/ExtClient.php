@@ -6,13 +6,29 @@ namespace Tantivy;
 
 /**
  * Backend nativo (ext-php-rs). Wrapper delgado sobre la clase nativa Tantivy\Native\Index que
- * registra la extensión. Traduce cualquier error nativo a TantivyException para que el tipo de
- * excepción sea idéntico al del backend FFI. Mismo contrato JSON que FfiClient.
+ * registra la extensión. Traduce cualquier error nativo a TantivyException. Contrato JSON estable
+ * con el núcleo Rust (mismos campos de config/doc/query).
  */
 final class ExtClient implements ClientInterface
 {
     private function __construct(private readonly \Tantivy\Native\Index $index)
     {
+    }
+
+    /**
+     * Red de seguridad determinística: libera el índice al destruirse el cliente, sin depender de que
+     * el consumidor llame close() a mano. El estado del índice vive en un registro global del proceso
+     * (en Rust), así que no cerrarlo lo fuga por toda la vida del worker (reader mmap + FDs de
+     * segmentos). El Drop nativo de Tantivy\Native\Index también lo libera al liberarse el objeto;
+     * close() es idempotente, así que ambos caminos coexisten sin problema.
+     */
+    public function __destruct()
+    {
+        try {
+            $this->index->close();
+        } catch (\Throwable) {
+            // cerrar nunca debe tirar desde un destructor.
+        }
     }
 
     public static function openOrCreate(array $config): ClientInterface

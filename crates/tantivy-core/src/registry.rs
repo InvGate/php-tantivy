@@ -29,6 +29,14 @@ fn table() -> &'static Mutex<HashMap<u64, IndexState>> {
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Toma el lock de la tabla recuperándose de un envenenamiento. Si un panic desenrolló mientras
+/// otro llamador tenía el lock, `lock()` devuelve `PoisonError`; hacer `.unwrap()` propagaría ese
+/// panic y dejaría la tabla inutilizable para TODO el proceso (crítico en un worker PHP-FPM de larga
+/// vida). Un panic aislado no corrompe el HashMap en sí, así que recuperamos el guard y seguimos.
+fn lock_table() -> std::sync::MutexGuard<'static, HashMap<u64, IndexState>> {
+    table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Abre un índice existente o lo crea en `cfg.path`. Devuelve un handle opaco.
 pub fn open_or_create(cfg: IndexConfig) -> Result<u64, String> {
     std::fs::create_dir_all(&cfg.path).map_err(|e| format!("no se pudo crear el dir: {e}"))?;
@@ -78,7 +86,7 @@ fn register_state(index: Index, id_field: &str, writer_heap_bytes: usize) -> Res
     };
 
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
-    table().lock().unwrap().insert(handle, state);
+    lock_table().insert(handle, state);
     Ok(handle)
 }
 
@@ -87,7 +95,7 @@ pub fn with_state<T>(
     handle: u64,
     f: impl FnOnce(&mut IndexState) -> Result<T, String>,
 ) -> Result<T, String> {
-    let mut guard = table().lock().unwrap();
+    let mut guard = lock_table();
     let state = guard
         .get_mut(&handle)
         .ok_or_else(|| format!("handle inválido: {handle}"))?;
@@ -96,7 +104,7 @@ pub fn with_state<T>(
 
 /// Cierra y descarta el índice. Devuelve true si existía.
 pub fn close(handle: u64) -> bool {
-    table().lock().unwrap().remove(&handle).is_some()
+    lock_table().remove(&handle).is_some()
 }
 
 #[cfg(test)]
@@ -166,6 +174,33 @@ mod tests {
         };
         let result = open_or_create(mismatched_cfg);
         assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovers_after_a_poisoned_lock() {
+        let dir = std::env::temp_dir().join(format!("tv_test_{}_poison", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+
+        // Envenenamos el mutex global: forzamos un panic mientras with_state tiene el lock tomado.
+        // (silenciamos el hook de panic para no ensuciar la salida del test con el backtrace esperado.)
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = with_state(h, |_s| -> Result<(), String> {
+                panic!("boom con el lock tomado")
+            });
+        }));
+        std::panic::set_hook(prev_hook);
+        assert!(panicked.is_err(), "la clausura debía paniquear");
+
+        // Con .lock().unwrap() esto panicaría (mutex envenenado) y dejaría la tabla inutilizable
+        // para todo el proceso. Al recuperar el lock envenenado, el registro sigue operativo.
+        let n = with_state(h, |s| s.doc_count()).unwrap();
+        assert_eq!(n, 0);
+        assert!(close(h));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

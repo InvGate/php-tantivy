@@ -5,7 +5,7 @@ use crate::registry::IndexState;
 /// Prefijo estable y neutro (no depende del idioma del mensaje) que marca el caso "el writer lock
 /// exclusivo del índice está tomado por otro proceso" (p. ej. un rebuild en curso). Los bindings PHP
 /// lo mapean a `Tantivy\IndexBusyException` para que los consumidores chequeen el TIPO, no el texto.
-/// Es un contrato: si se cambia acá, actualizar los clientes (FfiClient/ExtClient).
+/// Es un contrato: si se cambia acá, actualizar el cliente (ExtClient / TantivyException::forOperation).
 pub const WRITER_LOCKED_PREFIX: &str = "index_locked:";
 
 /// Obtiene (o crea) el IndexWriter cacheado del estado. tantivy permite un solo writer por
