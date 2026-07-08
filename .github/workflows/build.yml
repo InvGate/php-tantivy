@@ -7,15 +7,16 @@ name: build
 # Scope is pinned to PHP 8.4 NTS, x86_64, per the project's stated constraint (see spec §10
 # no-objetivos: no ZTS, no other PHP versions, no macOS).
 #
-# NOTE (2026-07-08): this file has never been executed by a CI runner — this repo has no git
-# remote configured in the environment it was authored in. It has only been checked for being
-# well-formed YAML (see docs/superpowers/notes/2026-07-08-windows-ext-build-spike.md and the
-# Task 8/9 report for the validation command + output). Treat first real execution on GitHub's
-# runners as the actual verification of this workflow, especially the Windows job (see below).
+# The Windows ext build mirrors ext-php-rs's own upstream CI, which builds its extension on
+# windows-latest with exactly this recipe: shivammathur/setup-php + nightly Rust, no special
+# PHP dev-pack step and no forced linker (setup-php provides the dev files ext-php-rs needs).
+# That alignment is why the Windows job has a real chance of passing on its first run; until it
+# has gone green here at least once it stays `continue-on-error` (see the windows job).
 
 on:
   push:
   pull_request:
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -94,14 +95,10 @@ jobs:
   windows:
     name: Windows (nightly Rust, MSVC, PHP 8.4 NTS) — ext build spike [gated]
     runs-on: windows-latest
-    # GATED: Task 8 (docs/superpowers/notes/2026-07-08-windows-ext-build-spike.md) documents the
-    # confirmed *requirements* for a Windows tantivy-ext build (nightly for vectorcall, MSVC,
-    # PHP 8.4 NTS dev pack) but could not execute an actual build/load — there is no Windows box
-    # in that environment. This job's first real run on GitHub's windows-latest runner IS that
-    # spike's first live execution. Keep `continue-on-error: true` so a Windows-ext failure never
-    # blocks the pipeline; the FFI cdylib already covers Windows customers who can enable
-    # ffi.enable=1. Flip this to false (and update the notes doc's status to GO) only after this
-    # job has gone green reliably.
+    # Recipe mirrors ext-php-rs's own upstream Windows CI (setup-php + nightly, no dev-pack step,
+    # default MSVC linker). Kept `continue-on-error: true` only until this job has gone green here
+    # at least once — a Windows-ext failure then never blocks the pipeline, and the FFI cdylib
+    # already covers Windows customers who can enable ffi.enable=1. Flip to false once it's green.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
