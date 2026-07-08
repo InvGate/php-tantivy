@@ -3,6 +3,7 @@
 
 # PHP
 /php/vendor/
+/php/.phpunit.result.cache
 
 # Internal working docs — NOT for publication (kept locally, never committed)
 /HANDOFF.md
