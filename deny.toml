@@ -1,0 +1,45 @@
+# cargo-deny config. Runs in CI (see .github/workflows/build.yml, "checks" job).
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# RUSTSEC advisory DB. En la config v2 todo advisory no ignorado hace fallar el check.
+# `ignore` es la válvula de escape tras TRIAGE explícito: pegar el id (RUSTSEC-YYYY-NNNN) con un
+# comentario del porqué. No agregar nada sin haber evaluado el impacto real.
+yanked = "warn"
+ignore = [
+    # ejemplo: "RUSTSEC-2024-XXXX", # unmaintained transitivo sin superficie de ataque acá.
+]
+
+[licenses]
+# Sólo licencias permisivas compatibles con la distribución MIT OR Apache-2.0 del proyecto.
+# Si aparece una licencia nueva en el árbol, evaluarla y sumarla acá a conciencia (no aflojar
+# el confidence-threshold para "que pase").
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+    # Bundle de certificados raíz (webpki-root-certs), sólo build-dep transitiva de ext-php-rs (ureq).
+    # Es una licencia de datos permisiva (Community Data License Agreement).
+    "CDLA-Permissive-2.0",
+    # Licencia del crate bzip2 (permisiva, estilo BSD), transitiva del árbol de compresión.
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Versiones duplicadas y wildcards son avisos, no bloqueos: en un árbol grande como el de tantivy
+# los duplicados son inevitables y no queremos romper el build por eso.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# Sólo crates.io (y git conocidos si hiciera falta). Un origen desconocido sí bloquea.
+unknown-registry = "deny"
+unknown-git = "deny"

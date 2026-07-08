@@ -35,9 +35,9 @@ jobs:
           # NTS (no thread-safety) is this action's Linux default; the ext extension is built
           # against whichever ABI php-config reports, so we assert NTS explicitly below rather
           # than trust the default silently.
-          tools: none
+          tools: phpunit
           # The ext backend IS the extension under test (loaded via -d extension= in the smoke
-          # step), so no PHP extension needs to be preinstalled here.
+          # and phpunit steps), so no PHP extension needs to be preinstalled here.
           extensions: none
 
       - name: Assert PHP build is NTS (project is pinned to 8.4 NTS only)
@@ -73,6 +73,12 @@ jobs:
       - name: Smoke test — ext backend (extension=, no ffi.enable needed)
         run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" php/tests/smoke.php
 
+      # PHPUnit suite (php/tests/*Test.php) with the freshly built extension loaded. Unlike the
+      # smoke script this exercises the userland facade (Client/ExtClient) through the real test
+      # harness. The ext .so must be loaded via -d extension= (it is the class under test).
+      - name: PHPUnit — ext backend
+        run: php -d extension="${{ github.workspace }}/target/release/libtantivyphp_ext.so" "$(which phpunit)" -c php/phpunit.xml
+
       # Package the Linux ext artifact: the ext cdylib renamed to tantivyphp.so so it drops
       # straight into extension_dir per the install guide.
       - name: Stage Linux artifacts
@@ -86,6 +92,40 @@ jobs:
           name: tantivyphp-linux-x64-php84nts
           path: dist/linux/*
           if-no-files-found: error
+
+  checks:
+    name: Lint & security (rustfmt, audit, deny, machete)
+    runs-on: ubuntu-latest
+    # Lightweight: fmt reads source, audit/deny read Cargo.lock, machete parses manifests — none
+    # need clang or a full build (clippy already runs in the linux job against a real compile).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable (+ rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      # Prebuilt binaries (fast) instead of `cargo install` from source.
+      - name: Install cargo-audit, cargo-deny, cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny,cargo-machete
+
+      # RUSTSEC advisories over the dependency tree. cargo-deny (below) also checks advisories, but
+      # cargo-audit is kept as a lighter, advisory-only signal per the project's tooling choice.
+      - name: cargo audit
+        run: cargo audit
+
+      # Advisories + license policy + source policy + dependency bans. Config: deny.toml.
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: cargo machete (unused dependencies)
+        run: cargo machete
 
   windows:
     name: Windows (nightly Rust, MSVC, PHP 8.4 NTS) — ext build spike [gated]

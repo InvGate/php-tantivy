@@ -2,6 +2,7 @@
 name = "tantivy-ext"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lib]
 name = "tantivyphp_ext"
