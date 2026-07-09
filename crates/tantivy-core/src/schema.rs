@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use tantivy::schema::{Schema, STORED, STRING, TEXT};
+use tantivy::schema::{FieldEntry, FieldType, Schema, STORED, STRING, TEXT};
 
 #[derive(Debug, Deserialize)]
 pub struct FieldsDescriptor {
@@ -38,6 +38,25 @@ pub fn build_schema(fields: &FieldsDescriptor) -> Schema {
         b.add_text_field(f, STORED);
     }
     b.build()
+}
+
+/// ¿Es `entry` un campo clave de match exacto (bucket `keys` -> STRING)?
+///
+/// Sólo estos campos pueden usarse como key_field en delete_by_id/update_document: el valor
+/// completo se indexa como UN único término, así `delete_term` matchea exactamente el doc de esa
+/// clave. Un campo `text` (TEXT, tokenizado con "default") indexa tokens sueltos, no el valor
+/// entero, y un `attribute` (STORED, sin indexar) no tiene términos: usar cualquiera de los dos
+/// como clave corrompe el índice (duplicados o borrado en masa).
+///
+/// El discriminante fiable en tantivy 0.25 es el tokenizer de las opciones de indexado: STRING usa
+/// "raw" (valor tal cual = un término), TEXT usa "default". Un campo sin opciones de indexado
+/// (attribute) no es indexado -> no es clave.
+pub fn field_is_exact_key(entry: &FieldEntry) -> bool {
+    matches!(
+        entry.field_type(),
+        FieldType::Str(opts)
+            if opts.get_indexing_options().is_some_and(|o| o.tokenizer() == "raw")
+    )
 }
 
 #[cfg(test)]
