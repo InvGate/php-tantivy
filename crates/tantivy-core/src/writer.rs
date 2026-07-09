@@ -1,6 +1,8 @@
+use tantivy::schema::Field;
 use tantivy::{TantivyDocument, TantivyError, Term};
 
 use crate::registry::IndexState;
+use crate::schema::field_is_exact_key;
 
 /// Prefijo estable y neutro (no depende del idioma del mensaje) que marca el caso "el writer lock
 /// exclusivo del índice está tomado por otro proceso" (p. ej. un rebuild en curso). Los bindings PHP
@@ -69,15 +71,33 @@ pub fn add_document(state: &mut IndexState, doc_json: &str) -> Result<(), String
     Ok(())
 }
 
+/// Resuelve `key_field` a un `Field` VÁLIDO como clave de borrado exacto, o devuelve un error claro.
+///
+/// delete_by_id/update_document borran con `delete_term(Term::from_field_text(field, valor))`, que
+/// sólo funciona si el valor entero se indexa como UN término: es decir, un campo del bucket `keys`
+/// (STRING, tokenizer "raw"). Pasar un campo `text` (tokenizado) o un `attribute` (sin indexar)
+/// corrompe el índice silenciosamente (duplicados en update, borrado en masa en delete), así que se
+/// rechaza acá ANTES de tocar el writer.
+fn resolve_key_field(state: &IndexState, key_field: &str) -> Result<Field, String> {
+    let field = state
+        .schema
+        .get_field(key_field)
+        .map_err(|_| format!("campo clave '{key_field}' no existe"))?;
+    if !field_is_exact_key(state.schema.get_field_entry(field)) {
+        return Err(format!(
+            "campo clave '{key_field}' no es una clave de match exacto: debe ser un campo 'keys' \
+             (no tokenizado), no un campo 'text' ni un atributo"
+        ));
+    }
+    Ok(field)
+}
+
 pub fn delete_by_id(
     state: &mut IndexState,
     key_field: &str,
     key_value: &str,
 ) -> Result<(), String> {
-    let field = state
-        .schema
-        .get_field(key_field)
-        .map_err(|_| format!("campo clave '{key_field}' no existe"))?;
+    let field = resolve_key_field(state, key_field)?;
     let term = Term::from_field_text(field, key_value);
     ensure_writer(state)?.delete_term(term);
     Ok(())
@@ -89,10 +109,7 @@ pub fn update_document(
     key_value: &str,
     doc_json: &str,
 ) -> Result<(), String> {
-    let field = state
-        .schema
-        .get_field(key_field)
-        .map_err(|_| format!("campo clave '{key_field}' no existe"))?;
+    let field = resolve_key_field(state, key_field)?;
     let term = Term::from_field_text(field, key_value);
     let doc = parse_doc(state, doc_json)?;
     let w = ensure_writer(state)?;
@@ -219,6 +236,92 @@ mod tests {
 
         close(h1);
         close(h2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // BUG (corrupción de datos): update_document/delete_by_id aceptan CUALQUIER campo como
+    // key_field, sin validar que sea una clave exacta (bucket `keys` -> STRING, tokenizer "raw").
+    // Si se pasa un campo TEXT (tokenizado, tokenizer "default"), Term::from_field_text arma un
+    // término con el valor COMPLETO, que no existe como término en el índice (sólo existen los
+    // tokens sueltos). Estos dos tests fijan el comportamiento CORRECTO post-fix: pasar un campo
+    // tokenizado como clave debe devolver Err y NO corromper el índice. Fallan contra el código
+    // actual (que devuelve Ok y corrompe).
+
+    #[test]
+    fn update_on_a_tokenized_field_is_rejected_and_does_not_duplicate() {
+        let dir = std::env::temp_dir().join(format!("tv_w_{}_tok_update", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+
+        // sembramos un doc con un título multi-palabra en el campo TEXT "title".
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"1","title":"hola mundo"}"#)
+        })
+        .unwrap();
+        with_state(h, commit).unwrap();
+        assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 1);
+
+        // "title" es TEXT (tokenizado) -> NO es una clave válida. Un update contra él debe
+        // rechazarse. Con el código actual, delete_term("hola mundo") no matchea nada (el índice
+        // sólo tiene los términos "hola" y "mundo"), el delete es no-op y el add duplica el doc.
+        let res = with_state(h, |s| {
+            update_document(
+                s,
+                "title",
+                "hola mundo",
+                r#"{"id_key":"1","title":"hola mundo"}"#,
+            )
+        });
+        with_state(h, commit).unwrap();
+
+        let n = with_state(h, |s| s.doc_count()).unwrap();
+        assert_eq!(
+            n, 1,
+            "update sobre una clave tokenizada duplicó el doc: quedan {n} copias (esperaba 1)"
+        );
+        assert!(
+            res.is_err(),
+            "update con key_field tokenizado ('title') debe devolver Err, devolvió Ok"
+        );
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_on_a_tokenized_field_is_rejected_and_does_not_mass_delete() {
+        let dir = std::env::temp_dir().join(format!("tv_w_{}_tok_delete", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+
+        // dos docs DISTINTOS que comparten el token "shared" en el campo tokenizado "title".
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"1","title":"shared alpha"}"#)
+        })
+        .unwrap();
+        with_state(h, |s| {
+            add_document(s, r#"{"id_key":"2","title":"shared beta"}"#)
+        })
+        .unwrap();
+        with_state(h, commit).unwrap();
+        assert_eq!(with_state(h, |s| s.doc_count()).unwrap(), 2);
+
+        // borrar por un campo TEXT usando un token compartido borra TODOS los docs que lo
+        // contienen (borrado en masa). Debe rechazarse en vez de ejecutarse.
+        let res = with_state(h, |s| delete_by_id(s, "title", "shared"));
+        with_state(h, commit).unwrap();
+
+        let n = with_state(h, |s| s.doc_count()).unwrap();
+        assert_eq!(
+            n, 2,
+            "delete sobre una clave tokenizada borró en masa: quedan {n} docs (esperaba 2)"
+        );
+        assert!(
+            res.is_err(),
+            "delete con key_field tokenizado ('title') debe devolver Err, devolvió Ok"
+        );
+
+        close(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
