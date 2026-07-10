@@ -8,8 +8,11 @@ namespace Tantivy;
  * Public contract for a tantivy index handle.
  *
  * All payloads are plain PHP arrays with a stable shape (mirrored 1:1 by the Rust core). The shapes
- * below are the source of truth for consumers; the backend ignores unknown keys rather than
- * erroring, so a typo silently does nothing — mind the exact names.
+ * below are the source of truth for consumers. Two different notions of "unknown" apply: an unknown
+ * *top-level query key* is ignored (serde drops unrecognized JSON keys), so a misspelled key like
+ * `wheer` silently does nothing — mind the exact key names. But a named *field* that does not exist
+ * in the schema is a hard error: a typo in `text_fields`, `where`, or `in` throws a
+ * {@see TantivyException} rather than silently contributing nothing.
  *
  * Field buckets (set once at creation, fixed for the life of the index directory):
  *   - `text`       → tokenized + stored (full-text search targets).

@@ -106,13 +106,25 @@ pub fn search(state: &IndexState, query_json: &str) -> Result<String, String> {
             words.len()
         );
     }
+    // text_fields: resolvemos los campos nombrados UNA sola vez, por adelantado. Un campo que no
+    // existe en el schema es un error (typo del caller), consistente con `where`/`in`; NO un skip
+    // silencioso que devolvería `[]` indistinguible de "sin match". Una lista vacía sigue siendo
+    // un no-op (no aporta cláusula de texto). Se valida aunque `text` esté vacío, así el typo se
+    // detecta igual, y evita el `get_field` redundante por cada token dentro del loop.
+    let text_fields: Vec<tantivy::schema::Field> = input
+        .text_fields
+        .iter()
+        .map(|fname| {
+            state
+                .schema
+                .get_field(fname)
+                .map_err(|_| format!("campo text_fields '{fname}' no existe"))
+        })
+        .collect::<Result<_, _>>()?;
+
     for word in &words {
         let mut per_word: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-        for fname in &input.text_fields {
-            let field = match state.schema.get_field(fname) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
+        for &field in &text_fields {
             let term = Term::from_field_text(field, word);
             per_word.push((
                 Occur::Should,
@@ -315,5 +327,72 @@ mod tests {
 
         let few: Vec<String> = vec!["reset".into(), "password".into()];
         assert_eq!(cap_tokens(few).len(), 2);
+    }
+
+    /// Helper: fresh index with one committed doc (`title:"reset password"`), returns the handle.
+    fn index_with_one_doc(suffix: &str) -> (u64, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("tv_q_{}_{}", std::process::id(), suffix));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = open_or_create(cfg(dir.to_str().unwrap())).unwrap();
+        with_state(h, |s| {
+            add_document(
+                s,
+                r#"{"id_key":"1","title":"reset password","visibility_type_key":"public"}"#,
+            )
+        })
+        .unwrap();
+        with_state(h, commit).unwrap();
+        (h, dir)
+    }
+
+    /// PHASE-1 REPRODUCER (expected to FAIL on current code, PASS after the fix).
+    ///
+    /// A typo in `text_fields` names a field that does not exist in the schema. With non-empty
+    /// `text`, the current code silently skips the unknown field inside the per-word loop, so no
+    /// clauses are produced and `search` returns `Ok({"hits":[]})` — indistinguishable from a
+    /// legitimately empty result. Post-fix, an unknown named field must be a hard error, consistent
+    /// with the `where`/`in` sections of the same function.
+    #[test]
+    fn rejects_unknown_text_field() {
+        let (h, dir) = index_with_one_doc("unknown_text_field");
+
+        // "titel" is a typo for "title" and is NOT in the schema; text is non-empty.
+        let q = r#"{"text":"reset","text_fields":["titel"],"limit":10}"#;
+        let res = with_state(h, |s| search(s, q));
+
+        let err = res.expect_err("expected an error for unknown text_field 'titel', got Ok");
+        assert_eq!(err, "campo text_fields 'titel' no existe");
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guard against over-reach: a valid `text_fields` entry must keep matching after the fix.
+    #[test]
+    fn valid_text_field_still_matches() {
+        let (h, dir) = index_with_one_doc("valid_text_field");
+
+        let q = r#"{"text":"reset","text_fields":["title"],"limit":10}"#;
+        let out = with_state(h, |s| search(s, q)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["hits"].as_array().unwrap().len(), 1);
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guard against over-reach: a genuinely empty query (no clauses at all) must still return `[]`
+    /// without erroring — the fix targets *named-but-unknown* fields, not the empty-query path.
+    #[test]
+    fn empty_query_still_returns_empty() {
+        let (h, dir) = index_with_one_doc("empty_query");
+
+        let q = r#"{"limit":10}"#;
+        let out = with_state(h, |s| search(s, q)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["hits"].as_array().unwrap().len(), 0);
+
+        close(h);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
